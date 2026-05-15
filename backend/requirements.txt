@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+yfinance==0.2.48
+pandas==2.2.3
+# TensorFlow 2.18.x requires numpy>=1.26 and <2.1 (2.1.x conflicts with tf-intel).
+numpy>=1.26.0,<2.1.0
+scikit-learn==1.5.2
+tensorflow==2.18.0
+joblib==1.4.2
+websockets==14.1
