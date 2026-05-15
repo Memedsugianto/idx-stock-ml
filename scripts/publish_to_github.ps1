@@ -63,18 +63,28 @@ function Invoke-Git {
     $oldEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & git @Args
-        return $LASTEXITCODE
+        & git @Args 2>&1 | Out-Null
+        $exitCode = $LASTEXITCODE
+        return $exitCode
     }
     finally {
         $ErrorActionPreference = $oldEap
     }
 }
 
-function Test-GitHasHead {
-    # rev-parse gagal jika belum ada commit — jangan biarkan stderr menghentikan script (EAP Stop).
-    $exitCode = Invoke-Git -Args @('rev-parse', '--verify', 'HEAD')
-    return ($exitCode -eq 0)
+function Test-GitHasCommit {
+  param([string] $Branch = 'main')
+  # HEAD/rev-parse kadang gagal di PowerShell meski commit sudah ada; pakai beberapa cek.
+  $checks = @(
+    { Invoke-Git -Args @('log', '-1', '--format=%H') }
+    { Invoke-Git -Args @('rev-parse', '--verify', 'HEAD') }
+    { Invoke-Git -Args @('rev-parse', '--verify', $Branch) }
+  )
+  foreach ($check in $checks) {
+    $code = & $check
+    if ($code -eq 0) { return $true }
+  }
+  return $false
 }
 
 function Ensure-GitUserIdentity([string] $GitHubUser) {
@@ -112,10 +122,10 @@ function Ensure-GitCommit {
     $addCode = Invoke-Git -Args @('add', '-A')
     if ($addCode -ne 0) { throw 'git add gagal' }
 
-    $hasHead = Test-GitHasHead
+    $hasCommit = Test-GitHasCommit -Branch $DefaultBranch
     $staged = Get-GitStagedFileNames
 
-    if (-not $hasHead) {
+    if (-not $hasCommit) {
         if ($staged.Count -eq 0) {
             Write-Host ''
             git status
@@ -361,7 +371,7 @@ if ($DryRun) {
     Write-Host ('[dry-run] git push -u origin ' + $DefaultBranch)
 }
 else {
-    if (-not (Test-GitHasHead)) {
+    if (-not (Test-GitHasCommit -Branch $DefaultBranch)) {
         Write-Host 'Belum ada commit - mencoba commit otomatis...' -ForegroundColor Yellow
         Ensure-GitCommit `
             -InitialMessage $InitialCommitMessage `
@@ -369,10 +379,11 @@ else {
             -DefaultBranch $DefaultBranch
     }
 
-    if (-not (Test-GitHasHead)) {
+    if (-not (Test-GitHasCommit -Branch $DefaultBranch)) {
         throw 'Belum ada commit setelah git add. Periksa output git status di atas.'
     }
 
+    Write-Host ('Commit siap di-push: ' + (git log -1 --oneline))
     git push -u origin $DefaultBranch
     if ($LASTEXITCODE -ne 0) {
         throw ('git push gagal. Coba: gh auth login; pastikan repo https://github.com/' + $GhRepo + ' ada; atau jalankan dengan -SkipCreate.')
