@@ -77,20 +77,40 @@ function Test-GitHasHead {
     return ($exitCode -eq 0)
 }
 
+function Invoke-Gh {
+    param([Parameter(Mandatory)][string[]] $Args)
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & gh @Args 2>&1 | Out-Null
+        return $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $oldEap
+    }
+}
+
+function Test-GhRepoExists([string] $Repo) {
+    # Repo belum ada → gh menulis GraphQL error ke stderr; itu normal, bukan kegagalan script.
+    $exitCode = Invoke-Gh -Args @('repo', 'view', $Repo)
+    return ($exitCode -eq 0)
+}
+
 function Test-GhLoggedIn([string] $ExpectedUser) {
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     $statusLines = @(gh auth status 2>&1)
+    $ErrorActionPreference = $oldEap
+
     if ($LASTEXITCODE -ne 0) {
         Write-Host ($statusLines -join [Environment]::NewLine)
         throw 'Belum login ke GitHub. Jalankan: gh auth login'
     }
 
     $login = ''
-    try {
-        $login = (gh api user -q .login 2>$null).ToString().Trim()
-    }
-    catch {
-        # gh api tidak tersedia / gagal — lanjut dengan teks auth status
-    }
+    $ErrorActionPreference = 'Continue'
+    $login = (gh api user -q .login 2>&1 | Out-String).Trim()
+    $ErrorActionPreference = $oldEap
 
     if ([string]::IsNullOrWhiteSpace($login)) {
         $joined = ($statusLines | ForEach-Object { "$_" }) -join "`n"
@@ -148,7 +168,7 @@ Write-Host "Remote : $RemoteUrl"
 Write-Host "Branch : $DefaultBranch"
 
 Assert-Command 'git' 'Instal: https://git-scm.com/download/win'
-Assert-Command 'gh' 'Instal: https://cli.github.com/ — lalu jalankan: gh auth login'
+Assert-Command 'gh' 'Instal: https://cli.github.com/ - lalu jalankan: gh auth login'
 
 Set-Location $ProjectRoot
 
@@ -168,7 +188,7 @@ else {
 Write-Step 'Inisialisasi repository git'
 if (-not (Test-Path (Join-Path $ProjectRoot '.git'))) {
     if ($DryRun) {
-        Write-Host "[dry-run] git init -b $DefaultBranch"
+        Write-Host ('[dry-run] git init -b ' + $DefaultBranch)
     }
     else {
         git init
@@ -224,10 +244,10 @@ $hasOrigin = $remotes -contains 'origin'
 
 if ($DryRun) {
     if (-not $hasOrigin) {
-        Write-Host "[dry-run] git remote add origin $RemoteUrl"
+        Write-Host ('[dry-run] git remote add origin ' + $RemoteUrl)
     }
     else {
-        Write-Host "[dry-run] git remote set-url origin $RemoteUrl"
+        Write-Host ('[dry-run] git remote set-url origin ' + $RemoteUrl)
     }
 }
 else {
@@ -243,30 +263,36 @@ else {
 if (-not $SkipCreate) {
     Write-Step "Membuat repo GitHub (jika belum ada): $GhRepo"
     if ($DryRun) {
-        Write-Host "[dry-run] gh repo create $GhRepo --$Visibility --source=. --remote=origin --push"
+        Write-Host ('[dry-run] gh repo create ' + $GhRepo + ' --' + $Visibility + ' --source=. --remote=origin --push')
     }
     else {
-        $view = gh repo view $GhRepo 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            & gh repo create $GhRepo `
-                --$Visibility `
-                --source=. `
-                --remote=origin `
-                --push `
-                --description $Description
-            if ($LASTEXITCODE -ne 0) { throw 'gh repo create gagal' }
-            Write-Host "`nRepo dibuat dan di-push: https://github.com/$GhRepo" -ForegroundColor Green
-            exit 0
+        if (Test-GhRepoExists -Repo $GhRepo) {
+            Write-Host "Repo sudah ada: https://github.com/$GhRepo"
         }
         else {
-            Write-Host "Repo sudah ada: https://github.com/$GhRepo"
+            Write-Host "Repo belum ada - membuat $GhRepo ($Visibility) ..."
+            $createCode = Invoke-Gh -Args @(
+                'repo', 'create', $GhRepo,
+                "--$Visibility",
+                '--source=.',
+                '--remote=origin',
+                '--push',
+                '--description', $Description
+            )
+            if ($createCode -ne 0) {
+                $manualCmd = 'gh repo create ' + $GhRepo + ' --' + $Visibility + ' --source=. --remote=origin --push'
+                throw "gh repo create gagal (exit $createCode). Coba manual: $manualCmd"
+            }
+            Write-Host ''
+            Write-Host ('Repo dibuat dan di-push: https://github.com/' + $GhRepo) -ForegroundColor Green
+            exit 0
         }
     }
 }
 
 Write-Step "Push ke origin ($DefaultBranch)"
 if ($DryRun) {
-    Write-Host "[dry-run] git push -u origin $DefaultBranch"
+    Write-Host ('[dry-run] git push -u origin ' + $DefaultBranch)
 }
 else {
     if (-not (Test-GitHasHead)) {
@@ -275,12 +301,8 @@ else {
 
     git push -u origin $DefaultBranch
     if ($LASTEXITCODE -ne 0) {
-        throw @"
-git push gagal. Coba:
-  1. gh auth login
-  2. Pastikan repo ada: https://github.com/$GhRepo
-  3. Atau buat manual di GitHub lalu jalankan lagi script ini dengan -SkipCreate
-"@
+        throw ('git push gagal. Coba: gh auth login; pastikan repo https://github.com/' + $GhRepo + ' ada; atau jalankan dengan -SkipCreate.')
     }
-    Write-Host "`nBerhasil: https://github.com/$GhRepo" -ForegroundColor Green
+    Write-Host ''
+    Write-Host ('Berhasil: https://github.com/' + $GhRepo) -ForegroundColor Green
 }
