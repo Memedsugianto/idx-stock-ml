@@ -77,6 +77,95 @@ function Test-GitHasHead {
     return ($exitCode -eq 0)
 }
 
+function Ensure-GitUserIdentity([string] $GitHubUser) {
+    $email = (git config user.email 2>$null)
+    $name = (git config user.name 2>$null)
+    if ([string]::IsNullOrWhiteSpace($email) -or [string]::IsNullOrWhiteSpace($name)) {
+        $safeEmail = ($GitHubUser + '@users.noreply.github.com')
+        git config user.email $safeEmail
+        git config user.name $GitHubUser
+        Write-Host ('Git identity lokal: ' + $GitHubUser + ' <' + $safeEmail + '>')
+    }
+}
+
+function Get-GitStagedFileNames {
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        return @(
+            git diff --cached --name-only 2>$null |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+    finally {
+        $ErrorActionPreference = $oldEap
+    }
+}
+
+function Ensure-GitCommit {
+    param(
+        [Parameter(Mandatory)][string] $InitialMessage,
+        [Parameter(Mandatory)][string] $GitHubUser,
+        [Parameter(Mandatory)][string] $DefaultBranch
+    )
+
+    $addCode = Invoke-Git -Args @('add', '-A')
+    if ($addCode -ne 0) { throw 'git add gagal' }
+
+    $hasHead = Test-GitHasHead
+    $staged = Get-GitStagedFileNames
+
+    if (-not $hasHead) {
+        if ($staged.Count -eq 0) {
+            Write-Host ''
+            git status
+            throw @'
+Belum ada commit dan tidak ada file ter-stage.
+Kemungkinan: .gitignore terlalu luas, atau folder proyek kosong.
+Perbaiki .gitignore lalu jalankan script lagi.
+'@
+        }
+
+        Ensure-GitUserIdentity -GitHubUser $GitHubUser
+        Write-Step ('Commit awal (' + $staged.Count + ' file): ' + $InitialMessage)
+        git commit -m $InitialMessage
+        if ($LASTEXITCODE -ne 0) {
+            throw 'git commit gagal. Set manual: git config user.name dan git config user.email'
+        }
+
+        Invoke-Git -Args @('branch', '-M', $DefaultBranch) | Out-Null
+        return
+    }
+
+    $dirty = @(
+        git status --porcelain 2>$null |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    if ($dirty.Count -eq 0) {
+        Write-Host 'Working tree bersih, tidak perlu commit baru.' -ForegroundColor Yellow
+        return
+    }
+
+    if ($staged.Count -eq 0) {
+        $addCode = Invoke-Git -Args @('add', '-A')
+        if ($addCode -ne 0) { throw 'git add gagal' }
+        $staged = Get-GitStagedFileNames
+    }
+
+    if ($staged.Count -eq 0) {
+        throw 'Ada perubahan tetapi tidak ada file ter-stage. Coba: git add -A'
+    }
+
+    Ensure-GitUserIdentity -GitHubUser $GitHubUser
+    $msg = Read-Host 'Ada perubahan. Pesan commit (Enter = Update IDX Stock ML)'
+    if ([string]::IsNullOrWhiteSpace($msg)) {
+        $msg = 'Update IDX Stock ML'
+    }
+    Write-Step ('Commit (' + $staged.Count + ' file): ' + $msg)
+    git commit -m $msg
+    if ($LASTEXITCODE -ne 0) { throw 'git commit gagal' }
+}
+
 function Invoke-Gh {
     param([Parameter(Mandatory)][string[]] $Args)
     $oldEap = $ErrorActionPreference
@@ -191,48 +280,25 @@ if (-not (Test-Path (Join-Path $ProjectRoot '.git'))) {
         Write-Host ('[dry-run] git init -b ' + $DefaultBranch)
     }
     else {
-        git init
-        if ($LASTEXITCODE -ne 0) { throw 'git init gagal' }
-        git symbolic-ref HEAD "refs/heads/$DefaultBranch" 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            git checkout -b $DefaultBranch 2>$null
-            if ($LASTEXITCODE -ne 0) {
-                git branch -M $DefaultBranch
-            }
+        # Jangan set branch sebelum commit pertama (hindari main tanpa commit).
+        $initCode = Invoke-Git -Args @('init', '-b', $DefaultBranch)
+        if ($initCode -ne 0) {
+            $initCode = Invoke-Git -Args @('init')
+            if ($initCode -ne 0) { throw 'git init gagal' }
         }
     }
 }
 
-Write-Step 'Staging file (mengikuti .gitignore)'
+Write-Step 'Staging & commit (mengikuti .gitignore)'
 if ($DryRun) {
-    Write-Host '[dry-run] git add -A'
+    Write-Host '[dry-run] git add -A && git commit (jika perlu)'
     Write-Host '[dry-run] git status -sb'
 }
 else {
-    git add -A
-    if ($LASTEXITCODE -ne 0) { throw 'git add gagal' }
-
-    $porcelain = git status --porcelain
-    if (-not $porcelain) {
-        Write-Host 'Tidak ada perubahan untuk di-commit.' -ForegroundColor Yellow
-    }
-    else {
-        $hasHead = Test-GitHasHead
-
-        if (-not $hasHead) {
-            Write-Step "Commit awal: $InitialCommitMessage"
-            git commit -m $InitialCommitMessage
-            if ($LASTEXITCODE -ne 0) { throw 'git commit gagal' }
-        }
-        else {
-            $msg = Read-Host 'Ada perubahan. Masukkan pesan commit (Enter = Update IDX Stock ML)'
-            if ([string]::IsNullOrWhiteSpace($msg)) {
-                $msg = 'Update IDX Stock ML'
-            }
-            git commit -m $msg
-            if ($LASTEXITCODE -ne 0) { throw 'git commit gagal' }
-        }
-    }
+    Ensure-GitCommit `
+        -InitialMessage $InitialCommitMessage `
+        -GitHubUser $GitHubUser `
+        -DefaultBranch $DefaultBranch
 }
 
 Write-Step 'Remote origin'
@@ -296,7 +362,15 @@ if ($DryRun) {
 }
 else {
     if (-not (Test-GitHasHead)) {
-        throw 'Belum ada commit. Pastikan ada file ter-stage, lalu jalankan script lagi.'
+        Write-Host 'Belum ada commit - mencoba commit otomatis...' -ForegroundColor Yellow
+        Ensure-GitCommit `
+            -InitialMessage $InitialCommitMessage `
+            -GitHubUser $GitHubUser `
+            -DefaultBranch $DefaultBranch
+    }
+
+    if (-not (Test-GitHasHead)) {
+        throw 'Belum ada commit setelah git add. Periksa output git status di atas.'
     }
 
     git push -u origin $DefaultBranch
