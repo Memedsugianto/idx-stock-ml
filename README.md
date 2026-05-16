@@ -140,19 +140,6 @@ Tab **Live** opens a WebSocket to `/ws/ticks/{symbol}`.
 - **Stock:** `BBCA`, `TLKM`, `BMRI` (backend appends `.JK`).
 - **IHSG / IDX Composite:** enter `IHSG`, `JKSE`, or `^JKSE`.
 
-## Publish ke GitHub (akun Memedsugianto)
-
-File sumber (backend, Flutter, skrip) bisa di-push ke GitHub. Folder berat **tidak** ikut commit (`.venv`, `build/`, `saved_models/`, `.env`) — lihat `.gitignore`.
-
-### Prasyarat (sekali)
-
-1. [Git for Windows](https://git-scm.com/download/win)
-2. [GitHub CLI](https://cli.github.com/) lalu login:
-   ```powershell
-   gh auth login
-   ```
-   Pilih akun **Memedsugianto** saat diminta.
-
 ### Konfigurasi repo
 
 Edit `scripts/github.config.ps1` jika perlu:
