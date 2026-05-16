@@ -1,4 +1,4 @@
-# IDX Stock ML
+# Predict Stock Price IDX with ML
 
 Flutter GUI + Python **FastAPI** backend for Indonesian stocks (**BEI/IDX**) and **IHSG** (IDX Composite), with **fundamental** and **technical** study views and **regression / ANN** models:
 
